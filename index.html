@@ -264,6 +264,8 @@
     .selected-list { display: flex; flex-wrap: wrap; gap: 8px; min-height: 34px; }
     .token {
       display: inline-flex;
+      align-items: center;
+      gap: 8px;
       padding: 7px 10px;
       border-radius: 999px;
       background: rgba(56,189,248,.12);
@@ -271,6 +273,19 @@
       color: #bae6fd;
       font-family: var(--mono);
       font-size: .82rem;
+    }
+
+    .token button {
+      width: 22px;
+      height: 22px;
+      display: inline-grid;
+      place-items: center;
+      padding: 0;
+      border-radius: 50%;
+      background: rgba(239,68,68,.92);
+      color: #fff;
+      font-size: .78rem;
+      line-height: 1;
     }
 
     .password-box, .secret-box {
@@ -309,6 +324,59 @@
       border: 1px solid rgba(255,255,255,.12);
       min-height: 260px;
       object-fit: cover;
+      cursor: crosshair;
+    }
+
+    .scanner-frame {
+      position: relative;
+      border-radius: 18px;
+      overflow: hidden;
+    }
+
+    .scan-reticle {
+      position: absolute;
+      left: 50%;
+      top: 50%;
+      width: min(58vw, 260px);
+      height: min(58vw, 260px);
+      transform: translate(-50%, -50%);
+      border: 3px solid rgba(56,189,248,.85);
+      border-radius: 22px;
+      pointer-events: none;
+      box-shadow: 0 0 0 999px rgba(0,0,0,.28), inset 0 0 0 1px rgba(255,255,255,.22);
+      transition: border-color .18s ease, box-shadow .18s ease;
+    }
+
+    .scan-reticle.success {
+      border-color: var(--green);
+      box-shadow: 0 0 0 999px rgba(34,197,94,.16), inset 0 0 0 1px rgba(255,255,255,.35), 0 0 28px rgba(34,197,94,.7);
+    }
+
+    .scan-reticle.error {
+      border-color: var(--danger);
+      box-shadow: 0 0 0 999px rgba(239,68,68,.16), inset 0 0 0 1px rgba(255,255,255,.35), 0 0 28px rgba(239,68,68,.7);
+    }
+
+    .scan-tip {
+      position: absolute;
+      left: 12px;
+      right: 12px;
+      bottom: 12px;
+      padding: 9px 11px;
+      border-radius: 999px;
+      background: rgba(0,0,0,.62);
+      border: 1px solid rgba(255,255,255,.16);
+      color: white;
+      font-size: .82rem;
+      text-align: center;
+      pointer-events: none;
+    }
+
+    .scan-status {
+      margin-top: 10px;
+      min-height: 42px;
+      display: grid;
+      align-items: center;
     }
 
     .scan-log { max-height: 180px; overflow: auto; display: grid; gap: 6px; padding-right: 3px; }
@@ -468,12 +536,20 @@
         <aside class="stack">
           <section class="card">
             <h2>Lector QR</h2>
-            <video id="video" playsinline muted></video>
+            <div class="scanner-frame" id="scannerFrame">
+              <video id="video" playsinline muted></video>
+              <div id="scanReticle" class="scan-reticle"></div>
+              <div class="scan-tip">Centra un QR y toca la imagen o pulsa “Escanear ahora”</div>
+            </div>
+            <div id="scanStatus" class="scan-status">
+              <div class="notice">Cámara cerrada. Abre la cámara y escanea de forma manual.</div>
+            </div>
             <div class="btn-row" style="margin-top:10px">
               <button id="startScan">Abrir cámara</button>
+              <button id="scanNow" class="green">Escanear ahora</button>
               <button id="stopScan" class="ghost">Parar</button>
             </div>
-            <p class="hint">Usa BarcodeDetector del navegador. Si no está disponible, selecciona QRs tocándolos en la pestaña Generar libreta.</p>
+            <p class="hint">El escaneo ya no es continuo: solo lee cuando pulsas. Esto evita acumulaciones por pasar la cámara sobre varios códigos.</p>
           </section>
 
           <section class="card">
@@ -607,6 +683,7 @@
       stream: null,
       scannerTimer: null,
       detector: null,
+      audioContext: null,
       lastScan: "",
       lastScanAt: 0,
       lastPassword: "",
@@ -623,7 +700,7 @@
     const $ = (id) => document.getElementById(id);
     const els = {
       gridSize: $("gridSize"), qrSize: $("qrSize"), entropyBytes: $("entropyBytes"), symbolSet: $("symbolSet"),
-      qrGrid: $("qrGrid"), selectedList: $("selectedList"), video: $("video"), scanLog: $("scanLog"),
+      qrGrid: $("qrGrid"), selectedList: $("selectedList"), video: $("video"), scanLog: $("scanLog"), scanStatus: $("scanStatus"), scanReticle: $("scanReticle"), scannerFrame: $("scannerFrame"),
       serviceName: $("serviceName"), userName: $("userName"), passwordLength: $("passwordLength"), version: $("version"),
       useLower: $("useLower"), useUpper: $("useUpper"), useDigits: $("useDigits"), useSymbols: $("useSymbols"), symbols: $("symbols"),
       userSequence: $("userSequence"), randomSequence: $("randomSequence"), secretStatus: $("secretStatus"), secretFingerprint: $("secretFingerprint"),
@@ -752,7 +829,28 @@
         els.selectedList.innerHTML = `<span class="hint">No hay QRs seleccionados todavía.</span>`;
         return;
       }
-      els.selectedList.innerHTML = state.selected.map((item, i) => `<span class="token">${i + 1}. ${item.id} ${item.symbol || ""}</span>`).join("");
+      els.selectedList.innerHTML = "";
+      state.selected.forEach((item, i) => {
+        const token = document.createElement("span");
+        token.className = "token";
+        token.innerHTML = `<span>${i + 1}. ${item.id} ${item.symbol || ""}</span>`;
+        const remove = document.createElement("button");
+        remove.type = "button";
+        remove.title = `Eliminar ${item.id}`;
+        remove.setAttribute("aria-label", `Eliminar ${item.id}`);
+        remove.textContent = "×";
+        remove.onclick = () => removeSelectionAt(i);
+        token.appendChild(remove);
+        els.selectedList.appendChild(token);
+      });
+    }
+
+    function removeSelectionAt(index) {
+      state.selected.splice(index, 1);
+      renderBook();
+      renderSelected();
+      updateSummaries();
+      logScan(`Eliminado escaneo #${index + 1}`);
     }
 
     function clearSelection() {
@@ -773,6 +871,8 @@
     async function startScanner() {
       if (!("BarcodeDetector" in window)) {
         logScan("Este navegador no tiene BarcodeDetector. Usa Chrome/Android o selecciona QRs tocándolos.");
+        setScanStatus("Este navegador no tiene lector QR nativo. Prueba Chrome/Android.", true);
+        flashReticle("error");
         return;
       }
       try {
@@ -781,29 +881,98 @@
         els.video.srcObject = state.stream;
         await els.video.play();
         logScan("Cámara iniciada");
-        scanTick();
+        setScanStatus("Cámara lista. Centra un QR y pulsa Escanear ahora.", false);
       } catch (error) {
         logScan("No se pudo abrir la cámara: " + error.message);
+        setScanStatus("No se pudo abrir la cámara: " + error.message, true);
+        flashReticle("error");
       }
     }
 
-    async function scanTick() {
-      if (!state.stream || !state.detector) return;
+    async function scanNow() {
+      if (!state.stream || !state.detector || els.video.readyState < 2) {
+        setScanStatus("Abre la cámara antes de escanear.", true);
+        flashReticle("error");
+        beep(false);
+        return;
+      }
+
       try {
+        setScanStatus("Leyendo QR centrado…", false);
         const codes = await state.detector.detect(els.video);
-        if (codes.length) {
-          const raw = codes[0].rawValue;
-          const now = Date.now();
-          if (raw !== state.lastScan || now - state.lastScanAt > 1800) {
-            state.lastScan = raw;
-            state.lastScanAt = now;
-            const parsed = parsePayload(raw);
-            if (parsed) addScannedSelection(parsed);
-            else logScan("QR leído, pero no pertenece a QR‑Vault PoC");
-          }
+        if (!codes.length) {
+          setScanStatus("No he detectado ningún QR. Acércalo o céntralo mejor.", true);
+          flashReticle("error");
+          beep(false);
+          return;
         }
+
+        const raw = chooseCenteredCode(codes).rawValue;
+        const parsed = parsePayload(raw);
+        if (!parsed) {
+          setScanStatus("QR leído, pero no pertenece a QR‑Vault PoC.", true);
+          logScan("QR leído, pero no pertenece a QR‑Vault PoC");
+          flashReticle("error");
+          beep(false);
+          return;
+        }
+
+        const exists = state.selected.some(x => x.id === parsed.id && x.token === parsed.token);
+        addScannedSelection(parsed);
+        setScanStatus(exists ? `QR ${parsed.id} ya estaba en la selección.` : `QR ${parsed.id} añadido correctamente.`, false);
+        flashReticle("success");
+        beep(true);
+      } catch (error) {
+        setScanStatus("Error al leer QR: " + error.message, true);
+        flashReticle("error");
+        beep(false);
+      }
+    }
+
+    function chooseCenteredCode(codes) {
+      if (codes.length === 1 || !els.video.videoWidth || !els.video.videoHeight) return codes[0];
+      const cx = els.video.videoWidth / 2;
+      const cy = els.video.videoHeight / 2;
+      return codes.slice().sort((a, b) => distanceToCenter(a, cx, cy) - distanceToCenter(b, cx, cy))[0];
+    }
+
+    function distanceToCenter(code, cx, cy) {
+      const box = code.boundingBox;
+      if (!box) return Number.MAX_SAFE_INTEGER;
+      const x = box.x + box.width / 2;
+      const y = box.y + box.height / 2;
+      return Math.hypot(x - cx, y - cy);
+    }
+
+    function setScanStatus(message, isError) {
+      els.scanStatus.innerHTML = `<div class="${isError ? "danger" : "notice"}">${message}</div>`;
+    }
+
+    function flashReticle(type) {
+      els.scanReticle.classList.remove("success", "error");
+      void els.scanReticle.offsetWidth;
+      els.scanReticle.classList.add(type);
+      setTimeout(() => els.scanReticle.classList.remove(type), 650);
+    }
+
+    function beep(success) {
+      try {
+        state.audioContext ||= new (window.AudioContext || window.webkitAudioContext)();
+        const ctx = state.audioContext;
+        const osc = ctx.createOscillator();
+        const gain = ctx.createGain();
+        osc.type = "sine";
+        osc.frequency.value = success ? 880 : 220;
+        gain.gain.value = 0.08;
+        osc.connect(gain);
+        gain.connect(ctx.destination);
+        osc.start();
+        osc.stop(ctx.currentTime + (success ? 0.08 : 0.14));
       } catch {}
-      state.scannerTimer = setTimeout(scanTick, 250);
+    }
+
+    async function scanTick() {
+      // Escaneo continuo desactivado: ahora solo se escanea al pulsar.
     }
 
     function stopScanner() {
@@ -1042,6 +1211,8 @@
     $("clearSelection").addEventListener("click", clearSelection);
     $("clearSelection2").addEventListener("click", clearSelection);
     $("startScan").addEventListener("click", startScanner);
+    $("scanNow").addEventListener("click", scanNow);
+    els.scannerFrame.addEventListener("click", scanNow);
     $("stopScan").addEventListener("click", stopScanner);
     $("goConfigFromScan").addEventListener("click", () => activatePanel("panelConfig"));
     $("goResultFromConfig").addEventListener("click", () => activatePanel("panelResult"));
